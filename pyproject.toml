@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=75,<76"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fh4-automation"
+version = "0.1.0"
+description = "Safe, replayable foundation for Forza Horizon 4 automation research"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Proprietary research" }
+authors = [{ name = "FH4 Automation contributors" }]
+dependencies = [
+    "dxcam==0.3.0; sys_platform == 'win32'",
+    "numpy==2.2.6; sys_platform == 'win32'",
+    "Pillow==11.3.0; sys_platform == 'win32'",
+]
+
+[project.scripts]
+fh4-agent = "fh4_agent.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13,<2",
+    "pytest>=8.3,<9",
+    "ruff>=0.8,<1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]

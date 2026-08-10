@@ -1,0 +1,20 @@
+config_version = 1
+
+[benchmark]
+track = "Horizon Festival Circuit"
+car_make = "Ford"
+car_model = "Focus RS"
+car_year = 2017
+car_condition = "stock"
+season = "summer"
+weather = "clear"
+time_of_day = "daytime"
+camera = "hood"
+
+[benchmark.assists]
+racing_line = "full"
+abs = true
+traction_control = true
+transmission = "automatic"
+steering = "normal"
+assisted_braking = false
