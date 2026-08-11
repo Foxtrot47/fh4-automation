@@ -76,7 +76,20 @@ FH4-310 through FH4-340 are published at commit `925c8aa8b470ed01e0ff3563695ef18
 - Eighteen conservative complete-lap candidates; median 44.091 seconds.
 - Controller scan found 23 Start records at 734.078–734.266 seconds and 14 B records at 746.156–746.250 seconds around the pause. It found 63 A/handbrake records at 13.844–14.328 seconds and zero Y/rewind records.
 - Representative start/minute-1/middle/pre-gap/post-gap/end race frames show no cars or visible ghost. A desktop frame during the focus/pause gap is excluded from aligned dataset output.
-- Count this as the fourth FH4-300 solo corpus session. Cumulative accepted corpus: 106,708 aligned frames, approximately 59.28 frame-equivalent minutes.
+- Count this as the fourth FH4-300 solo corpus session. Cumulative accepted corpus after session 004: 106,708 aligned frames, approximately 59.28 frame-equivalent minutes.
+
+#### Rivals solo session 005
+
+- Path: `recordings/fh4-300-rivals-solo-005-20260811-230419`.
+- Session ID: `d481aa03-b57b-489e-8c01-2bd89ea60d83`.
+- Complete 4.1 GB recording; manifest SHA-256 `6fe417bf738770a536e9c2716b3d2bb82e22615739ba67b5c5430259fe992511`.
+- Accepted report: `data/reports/fh4-300-rivals-solo-005-20260811-230419-segments-v1`.
+- One continuous race segment from 0.094 through 900.018 seconds, with 26,979 usable frames and zero alignment rejections or excluded frames.
+- 148,408 selected telemetry packets; zero estimated missing or out-of-order timestamps.
+- Nineteen conservative complete-lap candidates; median 44.017 seconds.
+- All 112,500 controller records had button mask `0x0000`: no pause, A/B, or Y/rewind input.
+- Four representative start/minute-1/middle/end frames show solo hood-view Rivals driving with no cars or visible ghost. This cannot prove every frame is ghost-free.
+- Count this as the fifth FH4-300 solo corpus session. Cumulative accepted corpus: 133,687 aligned frames, approximately 74.27 frame-equivalent minutes.
 
 #### Preserved aborted retry
 
@@ -90,12 +103,12 @@ FH4-310 through FH4-340 are published at commit `925c8aa8b470ed01e0ff3563695ef18
 - Independent code review initially found unbounded lap candidates and an open-segment tail error. Both were corrected with adversarial tests; rereview passed with no blockers.
 - Independent artifact review passed Rivals session 001 for solo-corpus inclusion, subject to the provenance and visual-sampling caveats above.
 - Independent controller-selection code review passed with no blockers. A boundary audit requested explicit-slot and legacy/new manifest integration checks; both were added and passed in the 26-test focused suite.
-- Sessions 002 through 004 passed strict validation, complete controller scans, and representative visual inspection with the caveats recorded above.
+- Sessions 002 through 005 passed strict validation, complete controller scans, and representative visual inspection with the caveats recorded above.
 
 ### Remaining work
 
-- Accepted solo corpus: approximately 59.28 frame-equivalent minutes of the 120–240 minute target; approximately 60.72 minutes remain to the minimum.
-- Record at least five more accepted approximately 15-minute sessions for the two-hour minimum; prefer six more so ten whole sessions provide stronger deterministic 80/10/10 split granularity.
+- Accepted solo corpus: approximately 74.27 frame-equivalent minutes of the 120–240 minute target; approximately 45.73 minutes remain to the minimum.
+- Record at least four more accepted approximately 15-minute sessions for the two-hour minimum; prefer five more so ten whole sessions provide stronger deterministic 80/10/10 split granularity.
 - Keep clean-lap and deliberate safe-recovery sessions identifiable, do not use rewind, and continue immediate validation plus representative-frame inspection after every capture.
 - Build the immutable dataset and held-out human baseline only after collection is complete.
 - Azure T4 quota approval remains pending but does not block local collection.
