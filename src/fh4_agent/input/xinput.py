@@ -13,6 +13,8 @@ from typing import Any, Protocol
 from ..contracts import ControllerSample, RequestedControlAction
 from ..sync import SessionClock, TimelineStamp
 
+XINPUT_GAMEPAD_A = 0x1000
+
 
 class ControllerDisconnected(RuntimeError):
     """The configured physical controller is not available."""
@@ -40,7 +42,7 @@ class XInputState:
             steering=axis(self.thumb_lx),
             throttle=self.right_trigger / 255.0,
             brake=self.left_trigger / 255.0,
-            handbrake=1.0 if self.buttons & 0x1000 else 0.0,
+            handbrake=1.0 if self.buttons & XINPUT_GAMEPAD_A else 0.0,
         )
 
     def to_mapping(self) -> dict[str, int]:
@@ -192,5 +194,6 @@ __all__ = [
     "PhysicalControllerSource",
     "XInputController",
     "XInputReader",
+    "XINPUT_GAMEPAD_A",
     "XInputState",
 ]

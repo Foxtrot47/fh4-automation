@@ -80,7 +80,10 @@ def make_session(
     frame_times: tuple[int, ...] = (100,),
     health: str | None = None,
     controller_times: tuple[int, ...] = (100,),
-    telemetry_points: tuple[tuple[int, int, int, float], ...] | None = None,
+    telemetry_points: tuple[
+        tuple[int, int, int, float] | tuple[int, int, int, float, bool], ...
+    ]
+    | None = None,
 ) -> Path:
     profile = CameraProfile()
     metadata = SessionMetadata.create(
@@ -113,9 +116,14 @@ def make_session(
             )
         )
     points = telemetry_points or ((100, 10, 1, 1.0),)
-    for session_ns, game_ms, lap, race_s in points:
+    for point in points:
+        if len(point) == 4:
+            session_ns, game_ms, lap, race_s = point
+            race = True
+        else:
+            session_ns, game_ms, lap, race_s, race = point
         recorder.append_telemetry(
-            packet(game_ms, lap, race_s),
+            packet(game_ms, lap, race_s, race),
             session_ns,
             ("127.0.0.1", 5300),
             source_clock_ns=session_ns,
@@ -193,6 +201,114 @@ def test_session_continuity_reports_duplicates_wraps_and_rejects_faults(
     assert not missing.accepted
     assert missing.telemetry_continuity["estimated_missing_packets"] == 5
     assert any("estimated missing" in reason for reason in missing.reasons)
+
+
+def test_post_race_gaps_and_frames_are_excluded_from_primary_race(
+    tmp_path: Path,
+) -> None:
+    adapter = StreamingSessionAdapter(
+        make_session(
+            tmp_path / "post-race",
+            "post-race",
+            frame_times=(100, 200, 300),
+            controller_times=(100, 200, 300),
+            telemetry_points=(
+                (100, 10, 1, 1.0, True),
+                (200, 100, 0, 0.0, False),
+                (300, 200, 0, 0.0, False),
+            ),
+        ),
+        benchmark(),
+    )
+    quality = adapter.validate()
+    assert quality.accepted
+    assert quality.aligned_frames == 1
+    assert quality.alignment_rejections == 0
+    assert quality.excluded_non_race_frames == 2
+    assert quality.race_segments == ((100, 200),)
+    assert quality.telemetry_continuity["estimated_missing_packets"] == 0
+    assert "excluded non-race frames: 2" in quality.warnings
+    assert [sample.frame_index for sample in adapter.aligned_frames()] == [0]
+
+
+def test_substantial_race_segments_survive_pause_boundaries(
+    tmp_path: Path,
+) -> None:
+    second = 1_000_000_000
+    adapter = StreamingSessionAdapter(
+        make_session(
+            tmp_path / "segments",
+            "segments",
+            frame_times=(
+                0,
+                100 * second,
+                200 * second,
+                450 * second,
+                500 * second,
+                900 * second,
+            ),
+            controller_times=(
+                0,
+                100 * second,
+                200 * second,
+                450 * second,
+                500 * second,
+                900 * second,
+            ),
+            telemetry_points=(
+                (0, 100, 1, 1.0, True),
+                (5 * second, 105, 0, 0.0, False),
+                (100 * second, 10, 1, 1.0, True),
+                (200 * second, 20, 2, 10.0, True),
+                (400 * second, 30, 0, 0.0, False),
+                (500 * second, 5, 3, 1.0, True),
+                (900 * second, 15, 4, 10.0, True),
+            ),
+        ),
+        benchmark(),
+    )
+    quality = adapter.validate()
+    assert quality.accepted
+    assert quality.race_segments == (
+        (100 * second, 400 * second),
+        (500 * second, 900 * second + 33_334_001),
+    )
+    assert quality.aligned_frames == 4
+    assert quality.excluded_non_race_frames == 2
+    assert quality.telemetry_continuity["out_of_order"] == 0
+    assert "excluded short race segments: 1" in quality.warnings
+    assert [sample.frame_index for sample in adapter.aligned_frames()] == [1, 2, 4, 5]
+
+
+def test_open_race_segment_does_not_absorb_stream_tails(tmp_path: Path) -> None:
+    adapter = StreamingSessionAdapter(
+        make_session(
+            tmp_path / "open-tail",
+            "open-tail",
+            frame_times=(100, 100_000_000),
+            controller_times=(100, 100_000_000),
+        ),
+        benchmark(),
+    )
+    quality = adapter.validate()
+    assert quality.accepted
+    assert quality.race_segments == ((100, 33_334_101),)
+    assert quality.aligned_frames == 1
+    assert quality.excluded_non_race_frames == 1
+    assert [sample.frame_index for sample in adapter.aligned_frames()] == [0]
+
+
+def test_candidate_lap_collection_is_bounded(tmp_path: Path) -> None:
+    points = tuple(
+        (index, index * 16, index, float(index + 1)) for index in range(1_028)
+    )
+    directory = make_session(
+        tmp_path / "too-many-laps",
+        "too-many-laps",
+        telemetry_points=points,
+    )
+    with pytest.raises(DatasetError, match="too many candidate laps"):
+        StreamingSessionAdapter(directory, benchmark()).validate()
 
 
 def test_whole_session_split_is_deterministic_and_leakage_safe() -> None:
@@ -311,6 +427,7 @@ def test_streaming_validation_health_alignment_and_warning(tmp_path: Path) -> No
         "rejected_sessions": 0,
         "aligned_frames": 1,
         "alignment_rejections": 0,
+        "excluded_non_race_frames": 0,
         "candidate_complete_laps": 1,
         "candidate_lap_median_duration_s": 10.0,
         "split_session_counts": {},
@@ -322,12 +439,15 @@ def test_streaming_validation_health_alignment_and_warning(tmp_path: Path) -> No
     assert not fatal.accepted and "health.stale=1" in fatal.reasons
     misaligned = StreamingSessionAdapter(
         make_session(
-            tmp_path / "bad-align", "bad-align", frame_times=(100, 99_000_000)
+            tmp_path / "bad-align",
+            "bad-align",
+            frame_times=(100, 99_000_000),
+            telemetry_points=((100, 10, 1, 1.0), (99_000_000, 26, 1, 2.0)),
         ),
         benchmark(),
     ).validate()
     assert not misaligned.accepted
-    assert "more than 1% of frames are misaligned" in misaligned.reasons
+    assert "more than 1% of race frames are misaligned" in misaligned.reasons
 
 
 def test_rejects_non_string_payload_and_unsafe_session_ids(tmp_path: Path) -> None:

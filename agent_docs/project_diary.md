@@ -22,3 +22,10 @@
 - Bounded salvage rejects fatal health, corruption, mixed configuration, missing/out-of-order telemetry, or sessions with more than 1% misaligned frames. Isolated frame alignment failures are filtered and capture drops remain visible warnings rather than silently discarded evidence.
 - Shard telemetry uses an explicit reviewed allowlist. Opaque Horizon/trailing bytes, applied controller bytes, AI-brake fields, and other label-leaking controls are excluded; ego motion, pose, wheel speed, tire slip, suspension, power/thermal, gear, and race state remain available.
 - Candidate lap segmentation requires two observed lap boundaries, tolerates duplicate timestamps and uint32 wrap, discards race/time/lap regressions, and deliberately records collision status as unknown because Data Out cannot prove a clean lap.
+
+## 2026-08-11 — Live dataset collection boundaries
+
+- Capture can arm on a read-only physical XInput A hold and begin on the release edge. Progress is emitted only to stderr so the manifest JSON remains machine-readable on stdout.
+- FH4 Rivals toggles `IsRaceOn` across pause/resume boundaries. Quality validation therefore treats substantial race-on intervals as separate reusable segments, resets lap and timestamp continuity state per segment, and excludes short transients and pause/post-race frames. A segment is substantial when it spans at least 2% of the telemetry session; segment and lap-candidate counts are explicitly bounded.
+- Open race segments end at the last telemetry timestamp plus the 33.334 ms alignment allowance. Frame/controller tails beyond available telemetry are excluded rather than absorbed into the race or mislabeled as alignment failures.
+- The first 20-lap live pilot contained Drivatar traffic and is retained only as pipeline evidence. The first accepted solo corpus session uses Rivals, contributes 26,159 frames (approximately 14.53 minutes), has no observed Y/rewind input, and passed independent code and artifact review.

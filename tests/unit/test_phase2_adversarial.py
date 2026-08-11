@@ -6,6 +6,7 @@ import math
 import struct
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,7 +38,11 @@ from fh4_agent.contracts import (
     ControllerSample,
     RequestedControlAction,
 )
-from fh4_agent.input import ControllerDisconnected, XInputController
+from fh4_agent.input import (
+    XINPUT_GAMEPAD_A,
+    ControllerDisconnected,
+    XInputController,
+)
 from fh4_agent.sync import BoundedQueue, QueueOverloadError, SessionClock, TimelineStamp
 
 
@@ -762,6 +767,88 @@ def test_session_capture_cli_uses_injected_sources(
     assert (output / "manifest.json").is_file()
 
 
+def test_session_capture_cli_starts_after_physical_a_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from fh4_agent import cli
+
+    class GateController(EmptySource):
+        def __init__(self) -> None:
+            super().__init__()
+            self.states = iter((0, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_A, 0))
+            self.reads = 0
+
+        def read_state(self) -> tuple[SimpleNamespace, None]:
+            self.reads += 1
+            return SimpleNamespace(buttons=next(self.states)), None
+
+    gate = GateController()
+    capture_controller = EmptySource()
+    controllers = iter((gate, capture_controller))
+    monkeypatch.setattr(cli, "XInputController", lambda clock: next(controllers))
+    monkeypatch.setattr(
+        cli,
+        "DXcamCamera",
+        lambda clock, profile: FiniteCamera([frame(0)]),
+    )
+    monkeypatch.setattr(
+        cli, "UdpTelemetryReceiver", lambda *args, **kwargs: EmptySource()
+    )
+    monkeypatch.setattr(
+        cli,
+        "SessionTelemetrySource",
+        lambda receiver, clock: EmptySource(),
+    )
+    output = tmp_path / "gated-cli-session"
+    assert (
+        cli.main(
+            [
+                "session-capture",
+                str(output),
+                "--config",
+                "configs/benchmark/horizon_festival_circuit.toml",
+                "--game-build",
+                "test-build",
+                "--max-frames",
+                "1",
+                "--max-seconds",
+                "1",
+                "--start-on-a-release",
+            ]
+        )
+        == 0
+    )
+    stderr = capsys.readouterr().err
+    assert "Waiting for physical XInput A hold" in stderr
+    assert "Armed; release A" in stderr
+    assert "A released; capture starting" in stderr
+    assert gate.reads == 4
+    assert gate.closed and capture_controller.closed
+    assert (output / "manifest.json").is_file()
+
+
+def test_capture_progress_reports_elapsed_and_remaining(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from fh4_agent import cli
+
+    times = iter((100.0, 102.0))
+    monkeypatch.setattr(cli.time, "monotonic", lambda: next(times))
+
+    class OneTickStop:
+        stopped = False
+
+        def is_set(self) -> bool:
+            return self.stopped
+
+        def wait(self, _interval_s: float) -> bool:
+            self.stopped = True
+            return True
+
+    cli._capture_progress(5.0, OneTickStop())  # type: ignore[arg-type]
+    assert "[00:02 elapsed | 00:03 remaining] Capturing" in capsys.readouterr().err
+
+
 def test_session_capture_cli_cleans_every_resource_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -804,9 +891,13 @@ def test_session_capture_cli_cleans_every_resource_on_failure(
                 "1",
                 "--max-seconds",
                 "1",
+                "--progress",
             ]
         )
     assert camera.closed and controller.closed and receiver.closed and telemetry.closed
+    assert all(
+        thread.name != "fh4-capture-progress" for thread in threading.enumerate()
+    )
     assert recover_session(output) == {
         "frames": 0,
         "controller": 0,

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Sequence
@@ -45,7 +46,7 @@ from .dataset import (
     quality_document,
     write_quality_reports,
 )
-from .input import XInputController
+from .input import XINPUT_GAMEPAD_A, XInputController
 from .safety import SafetySupervisor
 from .sync import SessionClock
 from .telemetry import (
@@ -150,6 +151,16 @@ def _parser() -> argparse.ArgumentParser:
     session_capture.add_argument("--port", type=int, default=5300)
     session_capture.add_argument("--receive-timeout-s", type=float, default=0.25)
     session_capture.add_argument("--output-index", type=int, default=0)
+    session_capture.add_argument(
+        "--start-on-a-release",
+        action="store_true",
+        help="arm on a physical XInput A hold and start on its release",
+    )
+    session_capture.add_argument(
+        "--progress",
+        action="store_true",
+        help="print an elapsed/remaining capture timer to stderr",
+    )
 
     dataset_validate = commands.add_parser(
         "dataset-validate", help="strictly validate recording sessions offline"
@@ -274,6 +285,47 @@ def _run_session_replay(path: str) -> int:
     return 0
 
 
+def _wait_for_a_release_start(*, poll_interval_s: float = 0.008) -> None:
+    """Wait for an explicit physical A-button hold followed by release."""
+    if poll_interval_s <= 0:
+        raise ValueError("poll_interval_s must be positive")
+    controller = XInputController(SessionClock())
+    armed = False
+    print("Waiting for physical XInput A hold...", file=sys.stderr, flush=True)
+    try:
+        while True:
+            state, _stamp = controller.read_state()
+            pressed = bool(state.buttons & XINPUT_GAMEPAD_A)
+            if not armed and pressed:
+                armed = True
+                print("Armed; release A to start capture.", file=sys.stderr, flush=True)
+            elif armed and not pressed:
+                print("A released; capture starting.", file=sys.stderr, flush=True)
+                return
+            time.sleep(poll_interval_s)
+    finally:
+        controller.close()
+
+
+def _capture_progress(
+    max_seconds: float, stop: threading.Event, *, interval_s: float = 1.0
+) -> None:
+    started = time.monotonic()
+    while not stop.is_set():
+        elapsed = max(0, int(time.monotonic() - started))
+        remaining = max(0, int(max_seconds - elapsed))
+        elapsed_minutes, elapsed_seconds = divmod(elapsed, 60)
+        remaining_minutes, remaining_seconds = divmod(remaining, 60)
+        print(
+            f"\r[{elapsed_minutes:02d}:{elapsed_seconds:02d} elapsed | "
+            f"{remaining_minutes:02d}:{remaining_seconds:02d} remaining] Capturing...",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+        stop.wait(interval_s)
+
+
 def _run_session_capture(
     path: str,
     config_path: str,
@@ -284,6 +336,8 @@ def _run_session_capture(
     port: int,
     receive_timeout_s: float,
     output_index: int,
+    start_on_a_release: bool,
+    progress: bool,
 ) -> int:
     if max_frames <= 0 or max_seconds <= 0:
         raise ValueError("session bounds must be positive")
@@ -291,6 +345,8 @@ def _run_session_capture(
         raise ValueError("--receive-timeout-s must be positive")
     config = load_config(config_path)
     profile = CameraProfile(output_index=output_index)
+    if start_on_a_release:
+        _wait_for_a_release_start()
     clock = SessionClock()
     session_id = str(uuid.uuid4())
     metadata = SessionMetadata.create(
@@ -331,7 +387,23 @@ def _run_session_capture(
             max_frames=max_frames,
             receive_timeout_s=receive_timeout_s,
         )
-        manifest = coordinator.run()
+        progress_stop = threading.Event()
+        progress_thread: threading.Thread | None = None
+        if progress:
+            progress_thread = threading.Thread(
+                target=_capture_progress,
+                args=(max_seconds, progress_stop),
+                name="fh4-capture-progress",
+                daemon=True,
+            )
+            progress_thread.start()
+        try:
+            manifest = coordinator.run()
+        finally:
+            if progress_thread is not None:
+                progress_stop.set()
+                progress_thread.join()
+                print(file=sys.stderr, flush=True)
     finally:
         active_error = sys.exception()
         cleanup_errors: list[BaseException] = []
@@ -483,6 +555,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.port,
                 args.receive_timeout_s,
                 args.output_index,
+                args.start_on_a_release,
+                args.progress,
             )
         if args.command == "dataset-validate":
             return _run_dataset_validate(args.sessions, args.config, args.report_dir)

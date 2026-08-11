@@ -29,6 +29,9 @@ def quality_document(
             "alignment_rejections": sum(
                 item.alignment_rejections for item in qualities
             ),
+            "excluded_non_race_frames": sum(
+                item.excluded_non_race_frames for item in qualities
+            ),
             "candidate_complete_laps": len(lap_durations),
             "candidate_lap_median_duration_s": (
                 statistics.median(lap_durations) if lap_durations else None
@@ -55,6 +58,7 @@ def quality_markdown(document: dict[str, object]) -> str:
         f"{summary['accepted_sessions']}/{summary['rejected_sessions']}",
         f"- Aligned frames: {summary['aligned_frames']}",
         f"- Alignment rejections: {summary['alignment_rejections']}",
+        f"- Excluded non-race frames: {summary['excluded_non_race_frames']}",
         f"- Candidate complete laps: {summary['candidate_complete_laps']}",
         "- Candidate lap median duration (s): "
         f"{summary['candidate_lap_median_duration_s']}",
@@ -65,9 +69,9 @@ def quality_markdown(document: dict[str, object]) -> str:
         "## Sessions",
         "",
         "| Session | Status | Rates (frame/controller/telemetry Hz) | "
-        "Alignment rejected | Alignment deltas | Telemetry continuity | Health | "
-        "Controls | Candidate laps |",
-        "|---|---|---|---:|---|---|---|---|---:|",
+        "Alignment rejected | Non-race excluded | Alignment deltas | "
+        "Telemetry continuity | Health | Controls | Candidate laps |",
+        "|---|---|---|---:|---:|---|---|---|---|---:|",
     ]
     sessions = document["sessions"]
     assert isinstance(sessions, list)
@@ -83,8 +87,8 @@ def quality_markdown(document: dict[str, object]) -> str:
             (
                 "| {session} | {status} | "
                 "{frame:.3f}/{controller:.3f}/{telemetry:.3f} | {rejected} | "
-                "`{alignment}` | `{continuity}` | `{health}` | `{controls}` | "
-                "{laps} |"
+                "{excluded} | `{alignment}` | `{continuity}` | `{health}` | "
+                "`{controls}` | {laps} |"
             ).format(
                 session=raw["session_id"],
                 status=status,
@@ -92,6 +96,7 @@ def quality_markdown(document: dict[str, object]) -> str:
                 controller=rates["controller_hz"],
                 telemetry=rates["telemetry_hz"],
                 rejected=counts["alignment_rejections"],
+                excluded=counts["excluded_non_race_frames"],
                 alignment=json.dumps(raw["alignment"], sort_keys=True),
                 continuity=json.dumps(raw["telemetry_continuity"], sort_keys=True),
                 health=json.dumps(raw["health"], sort_keys=True),

@@ -171,6 +171,8 @@ class SessionQuality:
     telemetry_count: int
     aligned_frames: int
     alignment_rejections: int
+    excluded_non_race_frames: int
+    race_segments: tuple[tuple[int, int], ...]
     duration_ns: int
     stream_clocks: dict[str, dict[str, int | None]]
     alignment: dict[str, dict[str, int | float | bool | None]]
@@ -181,7 +183,8 @@ class SessionQuality:
 
     @property
     def misaligned_fraction(self) -> float:
-        return self.alignment_rejections / self.frame_count if self.frame_count else 1.0
+        eligible = self.aligned_frames + self.alignment_rejections
+        return self.alignment_rejections / eligible if eligible else 1.0
 
     def to_mapping(self) -> dict[str, object]:
         duration_s = self.duration_ns / 1_000_000_000
@@ -215,7 +218,16 @@ class SessionQuality:
                 "telemetry": self.telemetry_count,
                 "aligned_frames": self.aligned_frames,
                 "alignment_rejections": self.alignment_rejections,
+                "excluded_non_race_frames": self.excluded_non_race_frames,
             },
+            "race_segments": [
+                {
+                    "start_session_ns": start_ns,
+                    "end_session_ns": end_ns,
+                    "duration_ns": end_ns - start_ns,
+                }
+                for start_ns, end_ns in self.race_segments
+            ],
             "duration_ns": self.duration_ns,
             "duration_s": duration_s,
             "stream_clocks": self.stream_clocks,

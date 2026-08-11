@@ -22,12 +22,16 @@ from .contracts import (
     MAX_MISALIGNED_FRACTION,
     AlignedFrame,
     DatasetError,
+    LapCandidate,
     SessionQuality,
     validate_session_id,
 )
 from .laps import LapStateMachine
 
 _FATAL_HEALTH = ("stale", "disconnects", "writer_faults", "overload_failures")
+_MAX_LAP_CANDIDATES = 1_024
+_MAX_RACE_SEGMENTS = 1_024
+_MIN_RACE_SEGMENT_FRACTION = 0.02
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,11 +342,21 @@ class StreamingSessionAdapter:
         action_min = {name: float("inf") for name in control_names}
         action_max = {name: float("-inf") for name in control_names}
         action_nonzero = {name: 0 for name in control_names}
-        laps = LapStateMachine(self.metadata.session_id)
-        candidates = []
+        action_count = 0
         controller_alignment = _BoundedDeltaStats()
         telemetry_alignment = _BoundedDeltaStats()
-        continuity = TimestampContinuity()
+        raw_race_segments: list[
+            tuple[int, int, dict[str, int], tuple[LapCandidate, ...]]
+        ] = []
+        active_race_start_ns: int | None = None
+        active_continuity: TimestampContinuity | None = None
+        active_laps: LapStateMachine | None = None
+        active_candidates: list[LapCandidate] = []
+        candidate_count = 0
+        last_telemetry_ns: int | None = None
+        current_frame_ns = 0
+        current_controller_delta: int | None = None
+        current_telemetry_delta: int | None = None
 
         def stream_clock_seen(stream: str, session_ns: int) -> None:
             nonlocal min_clock, max_clock
@@ -356,53 +370,145 @@ class StreamingSessionAdapter:
             nonlocal controller_count
             controller_count += 1
             stream_clock_seen("controller", value.session_ns)
-            for name, number in value.sample.action.to_mapping().items():
-                action_sums[name] += number
-                action_squares[name] += number * number
-                action_min[name] = min(action_min[name], number)
-                action_max[name] = max(action_max[name], number)
-                action_nonzero[name] += int(number != 0.0)
+
+        def finish_race_segment(end_ns: int) -> None:
+            nonlocal active_race_start_ns, active_continuity, active_laps
+            nonlocal active_candidates
+            if active_race_start_ns is None or active_continuity is None:
+                return
+            if len(raw_race_segments) >= _MAX_RACE_SEGMENTS:
+                raise DatasetError("too many race-state segments")
+            raw_race_segments.append(
+                (
+                    active_race_start_ns,
+                    end_ns,
+                    active_continuity.diagnostics(),
+                    tuple(active_candidates),
+                )
+            )
+            active_race_start_ns = None
+            active_continuity = None
+            active_laps = None
+            active_candidates = []
 
         def telemetry_seen(value: _TelemetryRecord) -> None:
-            nonlocal telemetry_count
+            nonlocal telemetry_count, candidate_count, last_telemetry_ns
+            nonlocal active_race_start_ns, active_continuity, active_laps
             telemetry_count += 1
+            last_telemetry_ns = value.session_ns
             stream_clock_seen("telemetry", value.session_ns)
-            continuity.update(value.packet.timestamp_ms)
-            candidate = laps.update(value.session_ns, value.packet)
+            if not value.packet.is_race_on:
+                finish_race_segment(value.session_ns)
+                return
+            if active_race_start_ns is None:
+                active_race_start_ns = value.session_ns
+                active_continuity = TimestampContinuity()
+                active_laps = LapStateMachine(self.metadata.session_id)
+            assert active_continuity is not None and active_laps is not None
+            active_continuity.update(value.packet.timestamp_ms)
+            candidate = active_laps.update(value.session_ns, value.packet)
             if candidate is not None:
-                candidates.append(candidate)
+                if candidate_count >= _MAX_LAP_CANDIDATES:
+                    raise DatasetError("too many candidate laps")
+                active_candidates.append(candidate)
+                candidate_count += 1
+
+        for _value in self._telemetry(telemetry_seen):
+            pass
+        if active_race_start_ns is not None and last_telemetry_ns is not None:
+            finish_race_segment(last_telemetry_ns + self.max_alignment_ns + 1)
+
+        telemetry_first = stream_first["telemetry"]
+        telemetry_last = stream_last["telemetry"]
+        telemetry_span_ns = (
+            telemetry_last - telemetry_first
+            if telemetry_first is not None and telemetry_last is not None
+            else 0
+        )
+        minimum_segment_ns = int(
+            telemetry_span_ns * _MIN_RACE_SEGMENT_FRACTION
+        )
+        selected_race_segments = [
+            segment
+            for segment in raw_race_segments
+            if segment[1] - segment[0] >= minimum_segment_ns
+        ]
+        race_segments = tuple(
+            (start_ns, end_ns)
+            for start_ns, end_ns, _diagnostics, _candidates in selected_race_segments
+        )
+        continuity_diagnostics = {
+            key: sum(segment[2][key] for segment in selected_race_segments)
+            for key in (
+                "packets",
+                "duplicates",
+                "out_of_order",
+                "wraps",
+                "estimated_missing_packets",
+            )
+        }
+        candidates = [
+            candidate
+            for segment in selected_race_segments
+            for candidate in segment[3]
+        ]
 
         def frame_seen(session_ns: int) -> None:
+            nonlocal current_frame_ns
+            current_frame_ns = session_ns
             stream_clock_seen("frames", session_ns)
 
         def alignment_seen(
             controller_delta: int | None, telemetry_delta: int | None
         ) -> None:
-            controller_alignment.add(controller_delta)
-            telemetry_alignment.add(telemetry_delta)
+            nonlocal current_controller_delta, current_telemetry_delta
+            current_controller_delta = controller_delta
+            current_telemetry_delta = telemetry_delta
 
-        frame_count = aligned = rejected = 0
+        frame_count = aligned = rejected = excluded_non_race = 0
         for value in self._aligned_pass(
             controller_seen,
-            telemetry_seen,
+            lambda _value: None,
             frame_seen,
             alignment_seen,
         ):
             frame_count += 1
-            if value is None:
+            in_selected_race = any(
+                current_frame_ns + self.max_alignment_ns >= start_ns
+                and current_frame_ns < end_ns
+                for start_ns, end_ns in race_segments
+            )
+            if not in_selected_race:
+                excluded_non_race += 1
+                continue
+            controller_alignment.add(current_controller_delta)
+            telemetry_alignment.add(current_telemetry_delta)
+            if value is None or not value.telemetry.is_race_on:
                 rejected += 1
-            else:
-                aligned += 1
+                continue
+            aligned += 1
+            action_count += 1
+            for name, number in value.action.to_mapping().items():
+                action_sums[name] += number
+                action_squares[name] += number * number
+                action_min[name] = min(action_min[name], number)
+                action_max[name] = max(action_max[name], number)
+                action_nonzero[name] += int(number != 0.0)
         reasons = [
             f"health.{field}={self.manifest.health[field]}"
             for field in _FATAL_HEALTH
             if self.manifest.health[field] > 0
         ]
+        if not race_segments:
+            reasons.append("no substantial race segment")
         if aligned == 0:
-            reasons.append("no aligned frames")
-        if frame_count and rejected / frame_count > MAX_MISALIGNED_FRACTION:
-            reasons.append("more than 1% of frames are misaligned")
-        continuity_diagnostics = continuity.diagnostics()
+            reasons.append("no aligned race frames")
+        eligible_race_frames = aligned + rejected
+        if (
+            eligible_race_frames
+            and rejected / eligible_race_frames > MAX_MISALIGNED_FRACTION
+        ):
+            reasons.append("more than 1% of race frames are misaligned")
         if continuity_diagnostics["out_of_order"]:
             reasons.append(
                 "telemetry game clock has out-of-order timestamps: "
@@ -414,6 +520,13 @@ class StreamingSessionAdapter:
                 f"{continuity_diagnostics['estimated_missing_packets']}"
             )
         warnings = []
+        excluded_short_segments = len(raw_race_segments) - len(race_segments)
+        if excluded_short_segments:
+            warnings.append(
+                f"excluded short race segments: {excluded_short_segments}"
+            )
+        if excluded_non_race:
+            warnings.append(f"excluded non-race frames: {excluded_non_race}")
         if self.manifest.health["dropped"]:
             warnings.append(
                 f"capture drops reported: {self.manifest.health['dropped']}"
@@ -425,18 +538,18 @@ class StreamingSessionAdapter:
             warnings.append("game build is unverified")
         controls: dict[str, float] = {}
         for name in control_names:
-            if controller_count:
-                controls[f"{name}_mean"] = action_sums[name] / controller_count
+            if action_count:
+                controls[f"{name}_mean"] = action_sums[name] / action_count
                 controls[f"{name}_min"] = action_min[name]
                 controls[f"{name}_max"] = action_max[name]
                 controls[f"{name}_max_abs"] = max(
                     abs(action_min[name]), abs(action_max[name])
                 )
                 controls[f"{name}_rms"] = (
-                    action_squares[name] / controller_count
+                    action_squares[name] / action_count
                 ) ** 0.5
                 controls[f"{name}_nonzero_fraction"] = (
-                    action_nonzero[name] / controller_count
+                    action_nonzero[name] / action_count
                 )
             else:
                 for statistic in (
@@ -482,6 +595,8 @@ class StreamingSessionAdapter:
             telemetry_count,
             aligned,
             rejected,
+            excluded_non_race,
+            race_segments,
             duration_ns,
             stream_clocks,
             alignment,
@@ -504,7 +619,11 @@ class StreamingSessionAdapter:
             lambda _value: None,
             lambda _controller, _telemetry: None,
         ):
-            if value is not None:
+            if value is not None and value.telemetry.is_race_on and any(
+                value.session_ns + self.max_alignment_ns >= start_ns
+                and value.session_ns < end_ns
+                for start_ns, end_ns in quality.race_segments
+            ):
                 yield value
 
 
