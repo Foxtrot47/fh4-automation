@@ -46,7 +46,12 @@ from .dataset import (
     quality_document,
     write_quality_reports,
 )
-from .input import XINPUT_GAMEPAD_A, XInputController
+from .input import (
+    XINPUT_GAMEPAD_A,
+    ControllerError,
+    XInputController,
+    resolve_xinput_slot,
+)
 from .safety import SafetySupervisor
 from .sync import SessionClock
 from .telemetry import (
@@ -151,6 +156,14 @@ def _parser() -> argparse.ArgumentParser:
     session_capture.add_argument("--port", type=int, default=5300)
     session_capture.add_argument("--receive-timeout-s", type=float, default=0.25)
     session_capture.add_argument("--output-index", type=int, default=0)
+    session_capture.add_argument(
+        "--controller-slot",
+        type=int,
+        choices=range(4),
+        help=(
+            "XInput slot 0-3; by default require exactly one connected controller"
+        ),
+    )
     session_capture.add_argument(
         "--start-on-a-release",
         action="store_true",
@@ -285,11 +298,13 @@ def _run_session_replay(path: str) -> int:
     return 0
 
 
-def _wait_for_a_release_start(*, poll_interval_s: float = 0.008) -> None:
+def _wait_for_a_release_start(
+    slot: int, *, poll_interval_s: float = 0.008
+) -> None:
     """Wait for an explicit physical A-button hold followed by release."""
     if poll_interval_s <= 0:
         raise ValueError("poll_interval_s must be positive")
-    controller = XInputController(SessionClock())
+    controller = XInputController(SessionClock(), slot=slot)
     armed = False
     print("Waiting for physical XInput A hold...", file=sys.stderr, flush=True)
     try:
@@ -336,6 +351,7 @@ def _run_session_capture(
     port: int,
     receive_timeout_s: float,
     output_index: int,
+    controller_slot: int | None,
     start_on_a_release: bool,
     progress: bool,
 ) -> int:
@@ -345,8 +361,14 @@ def _run_session_capture(
         raise ValueError("--receive-timeout-s must be positive")
     config = load_config(config_path)
     profile = CameraProfile(output_index=output_index)
+    resolved_controller_slot = resolve_xinput_slot(controller_slot)
+    print(
+        f"Using read-only XInput slot {resolved_controller_slot}.",
+        file=sys.stderr,
+        flush=True,
+    )
     if start_on_a_release:
-        _wait_for_a_release_start()
+        _wait_for_a_release_start(resolved_controller_slot)
     clock = SessionClock()
     session_id = str(uuid.uuid4())
     metadata = SessionMetadata.create(
@@ -355,6 +377,7 @@ def _run_session_capture(
         started_monotonic_s=clock.origin_monotonic_ns / 1_000_000_000,
         session_id=session_id,
         profile_digest=profile_digest(profile),
+        controller_slot=resolved_controller_slot,
     )
     recorder: SessionRecorder | None = None
     resources: list[Any] = []
@@ -368,7 +391,7 @@ def _run_session_capture(
         )
         camera = DXcamCamera(clock, profile=profile)
         resources.append(camera)
-        controller = XInputController(clock)
+        controller = XInputController(clock, slot=resolved_controller_slot)
         resources.append(controller)
         receiver = UdpTelemetryReceiver(
             host,
@@ -555,6 +578,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.port,
                 args.receive_timeout_s,
                 args.output_index,
+                args.controller_slot,
                 args.start_on_a_release,
                 args.progress,
             )
@@ -575,6 +599,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ValueError,
         OSError,
         RecordingError,
+        ControllerError,
     ) as exc:
         parser.error(str(exc))
     return 2

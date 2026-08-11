@@ -76,9 +76,22 @@ def test_session_metadata_round_trip(benchmark: BenchmarkIdentity) -> None:
         game_build="test-build",
         started_monotonic_s=12.0,
         session_id="session-1",
+        controller_slot=2,
     )
     assert SessionMetadata.from_mapping(metadata.to_mapping()) == metadata
     assert metadata.config_digest
+    assert metadata.to_mapping()["controller_slot"] == 2
+
+    legacy = metadata.to_mapping()
+    del legacy["controller_slot"]
+    assert SessionMetadata.from_mapping(legacy).controller_slot is None
+    with pytest.raises(ValueError, match="controller_slot"):
+        SessionMetadata.create(
+            benchmark,
+            game_build="test-build",
+            started_monotonic_s=12.0,
+            controller_slot=4,
+        )
 
 
 def test_arming_requires_explicit_validation(benchmark: BenchmarkIdentity) -> None:

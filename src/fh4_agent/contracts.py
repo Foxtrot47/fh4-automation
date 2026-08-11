@@ -535,6 +535,7 @@ class SessionMetadata:
     game_build: str
     config_digest: str
     profile_digest: str = ""
+    controller_slot: int | None = None
 
     def __post_init__(self) -> None:
         _string(self.session_id, "session_id")
@@ -546,6 +547,12 @@ class SessionMetadata:
         _string(self.config_digest, "config_digest")
         if not isinstance(self.profile_digest, str):
             raise ContractError("profile_digest must be a string")
+        if self.controller_slot is not None and (
+            isinstance(self.controller_slot, bool)
+            or not isinstance(self.controller_slot, int)
+            or not 0 <= self.controller_slot <= 3
+        ):
+            raise ContractError("controller_slot must be an integer from 0 through 3")
 
     @classmethod
     def create(
@@ -556,6 +563,7 @@ class SessionMetadata:
         started_monotonic_s: float,
         session_id: str | None = None,
         profile_digest: str = "",
+        controller_slot: int | None = None,
     ) -> Self:
         if not isinstance(benchmark, BenchmarkIdentity):
             raise ContractError("benchmark must be BenchmarkIdentity")
@@ -567,10 +575,11 @@ class SessionMetadata:
             game_build=game_build,
             config_digest=benchmark_digest(benchmark),
             profile_digest=profile_digest,
+            controller_slot=controller_slot,
         )
 
     def to_mapping(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "session_id": self.session_id,
             "benchmark": self.benchmark.to_mapping(),
             "started_at_utc": self.started_at_utc,
@@ -579,6 +588,9 @@ class SessionMetadata:
             "config_digest": self.config_digest,
             "profile_digest": self.profile_digest,
         }
+        if self.controller_slot is not None:
+            result["controller_slot"] = self.controller_slot
+        return result
 
     @classmethod
     def from_mapping(cls, value: object) -> Self:
@@ -591,9 +603,10 @@ class SessionMetadata:
             "game_build",
             "config_digest",
             "profile_digest",
+            "controller_slot",
         }
         _check_keys(values, allowed, "session metadata")
-        required = allowed - {"profile_digest"}
+        required = allowed - {"profile_digest", "controller_slot"}
         missing = required - set(values)
         if missing:
             raise ContractError(
@@ -608,6 +621,7 @@ class SessionMetadata:
             game_build=values["game_build"],
             config_digest=values["config_digest"],
             profile_digest=values.get("profile_digest", ""),
+            controller_slot=values.get("controller_slot"),
         )
 
 

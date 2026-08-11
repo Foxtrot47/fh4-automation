@@ -51,13 +51,16 @@ uv run fh4-agent session-capture recordings/session \
   --config configs/benchmark/horizon_festival_circuit.toml \
   --game-build "FH4-Steam-build-label" \
   --max-frames 27000 --max-seconds 900 \
-  --start-on-a-release --progress
+  --start-on-a-release
 ```
 
 With `--start-on-a-release`, the command opens a temporary read-only XInput
 reader, waits for a physical A-button hold, and starts only after the release
-edge. `--progress` writes an elapsed/remaining timer to stderr so the final JSON
-on stdout remains machine-readable.
+edge. By default capture requires exactly one connected XInput controller and
+auto-selects its slot. When multiple controllers are connected, pass
+`--controller-slot 0`, `1`, `2`, or `3`; the resolved slot is persisted in the
+session metadata. `--progress` writes an elapsed/remaining timer to stderr so
+the final JSON on stdout remains machine-readable.
 
 Validate a finalized session, replay all streams, or recover the valid tails of
 an incomplete session without opening hardware:
@@ -93,9 +96,10 @@ frames. Shard metadata excludes opaque Horizon bytes and applied controls while
 retaining reviewed ego/slip/pose state.
 
 The FH4-200 camera profile is fixed to a borderless 2560x1440 source, copied
-DXGI frames, and 960x540 JPEG at 30 FPS. Physical input is read-only XInput slot 0;
-all streams carry integer session-relative monotonic nanoseconds while source
-and game clocks remain available separately. `dxcam`, NumPy, and Pillow are
+DXGI frames, and 960x540 JPEG at 30 FPS. Physical input uses read-only XInput
+slot discovery or an explicit slot override; all streams carry integer
+session-relative monotonic nanoseconds while source and game clocks remain
+available separately. `dxcam`, NumPy, and Pillow are
 lazy Windows-only adapters and are never accessed at import time.
 
 The decoder accepts only tightly packed little-endian packets of exactly 323

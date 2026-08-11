@@ -41,7 +41,10 @@ from fh4_agent.contracts import (
 from fh4_agent.input import (
     XINPUT_GAMEPAD_A,
     ControllerDisconnected,
+    ControllerSelectionError,
     XInputController,
+    connected_xinput_slots,
+    resolve_xinput_slot,
 )
 from fh4_agent.sync import BoundedQueue, QueueOverloadError, SessionClock, TimelineStamp
 
@@ -475,6 +478,51 @@ def test_xinput_raw_packet_buttons_disconnect_and_deterministic_pacing(
     assert [sample.packet for sample in sampled] == [17, 18]
     assert pacing.sleeps == [pytest.approx(0.5)]
     assert [sample.source_clock_ns for sample in sampled] == [0, 500_000_000]
+    with pytest.raises(ValueError, match="0 through 3"):
+        XInputController(clock, slot=4)
+
+
+def test_xinput_slot_discovery_and_fail_closed_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "packet": 1,
+        "buttons": 0,
+        "left_trigger": 0,
+        "right_trigger": 0,
+        "thumb_lx": 0,
+        "thumb_ly": 0,
+        "thumb_rx": 0,
+        "thumb_ry": 0,
+    }
+    function = FakeXInputFunction(
+        [(1167, values), (0, values), (1167, values), (1167, values)]
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        "fh4_agent.input.xinput.ctypes.WinDLL", lambda name: FakeDll(function)
+    )
+    assert connected_xinput_slots() == (1,)
+    assert function.calls == [0, 1, 2, 3]
+
+    monkeypatch.setattr(
+        "fh4_agent.input.xinput.connected_xinput_slots", lambda: (1,)
+    )
+    assert resolve_xinput_slot() == 1
+    assert resolve_xinput_slot(1) == 1
+    with pytest.raises(ControllerSelectionError, match="slot 0 is not connected"):
+        resolve_xinput_slot(0)
+    monkeypatch.setattr(
+        "fh4_agent.input.xinput.connected_xinput_slots", lambda: (0, 1)
+    )
+    assert resolve_xinput_slot(1) == 1
+    with pytest.raises(ControllerSelectionError, match="multiple.*--controller-slot"):
+        resolve_xinput_slot()
+    monkeypatch.setattr(
+        "fh4_agent.input.xinput.connected_xinput_slots", lambda: ()
+    )
+    with pytest.raises(ControllerSelectionError, match="no connected"):
+        resolve_xinput_slot()
 
 
 def test_dxcam_lifecycle_copy_timestamp_and_release(
@@ -655,7 +703,9 @@ def test_manifest_digest_file_and_metadata_validation(tmp_path: Path) -> None:
     )
     manifest = recorder.finalize()
     path = directory / "manifest.json"
-    assert validate_manifest(path, benchmark(), CameraProfile()).files == manifest.files
+    validated = validate_manifest(path, benchmark(), CameraProfile())
+    assert validated.files == manifest.files
+    assert "controller_slot" not in validated.metadata
 
     document = json.loads(path.read_text())
     document["profile_digest"] = "0" * 64
@@ -735,7 +785,10 @@ def test_session_capture_cli_uses_injected_sources(
         "DXcamCamera",
         lambda clock, profile: FiniteCamera([frame(0)]),
     )
-    monkeypatch.setattr(cli, "XInputController", lambda clock: EmptySource())
+    monkeypatch.setattr(cli, "resolve_xinput_slot", lambda requested: 0)
+    monkeypatch.setattr(
+        cli, "XInputController", lambda clock, *, slot: EmptySource()
+    )
     monkeypatch.setattr(
         cli,
         "UdpTelemetryReceiver",
@@ -785,7 +838,20 @@ def test_session_capture_cli_starts_after_physical_a_release(
     gate = GateController()
     capture_controller = EmptySource()
     controllers = iter((gate, capture_controller))
-    monkeypatch.setattr(cli, "XInputController", lambda clock: next(controllers))
+    slots: list[int] = []
+    requested_slots: list[int | None] = []
+
+    def resolve_slot(requested: int | None) -> int:
+        requested_slots.append(requested)
+        return 2
+
+    monkeypatch.setattr(cli, "resolve_xinput_slot", resolve_slot)
+
+    def controller_factory(clock: object, *, slot: int) -> EmptySource:
+        slots.append(slot)
+        return next(controllers)
+
+    monkeypatch.setattr(cli, "XInputController", controller_factory)
     monkeypatch.setattr(
         cli,
         "DXcamCamera",
@@ -813,6 +879,8 @@ def test_session_capture_cli_starts_after_physical_a_release(
                 "1",
                 "--max-seconds",
                 "1",
+                "--controller-slot",
+                "2",
                 "--start-on-a-release",
             ]
         )
@@ -823,8 +891,15 @@ def test_session_capture_cli_starts_after_physical_a_release(
     assert "Armed; release A" in stderr
     assert "A released; capture starting" in stderr
     assert gate.reads == 4
+    assert requested_slots == [2]
+    assert slots == [2, 2]
     assert gate.closed and capture_controller.closed
-    assert (output / "manifest.json").is_file()
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["metadata"]["controller_slot"] == 2
+    validated = validate_manifest(
+        output / "manifest.json", benchmark(), CameraProfile()
+    )
+    assert validated.metadata["controller_slot"] == 2
 
 
 def test_capture_progress_reports_elapsed_and_remaining(
@@ -861,7 +936,10 @@ def test_session_capture_cli_cleans_every_resource_on_failure(
         EmptySource(),
     )
     monkeypatch.setattr(cli, "DXcamCamera", lambda clock, profile: camera)
-    monkeypatch.setattr(cli, "XInputController", lambda clock: controller)
+    monkeypatch.setattr(cli, "resolve_xinput_slot", lambda requested: 0)
+    monkeypatch.setattr(
+        cli, "XInputController", lambda clock, *, slot: controller
+    )
     monkeypatch.setattr(
         cli,
         "UdpTelemetryReceiver",

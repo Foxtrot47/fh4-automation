@@ -1,4 +1,4 @@
-"""Read-only physical XInput sampling (slot 0 only)."""
+"""Read-only physical XInput sampling and controller selection."""
 # ruff: noqa: E501
 
 from __future__ import annotations
@@ -14,10 +14,25 @@ from ..contracts import ControllerSample, RequestedControlAction
 from ..sync import SessionClock, TimelineStamp
 
 XINPUT_GAMEPAD_A = 0x1000
+_XINPUT_SLOTS = range(4)
 
 
-class ControllerDisconnected(RuntimeError):
+class ControllerError(RuntimeError):
+    """Base error for physical XInput discovery and sampling."""
+
+
+class ControllerDisconnected(ControllerError):
     """The configured physical controller is not available."""
+
+
+class ControllerSelectionError(ControllerError):
+    """A unique physical XInput controller could not be selected."""
+
+
+def _validate_slot(slot: int) -> int:
+    if isinstance(slot, bool) or not isinstance(slot, int) or slot not in _XINPUT_SLOTS:
+        raise ValueError("XInput slot must be an integer from 0 through 3")
+    return slot
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,11 +82,11 @@ class XInputController:
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
         poll_hz: int = 125,
     ) -> None:
-        if slot != 0:
-            raise ValueError("only XInput slot 0 is supported")
         if isinstance(poll_hz, bool) or not isinstance(poll_hz, int) or poll_hz <= 0:
             raise ValueError("poll_hz must be positive")
-        self.clock, self.slot, self.poll_hz = clock, slot, poll_hz
+        self.clock = clock
+        self.slot = _validate_slot(slot)
+        self.poll_hz = poll_hz
         self._monotonic_ns = monotonic_ns
         self._dll: Any = None
         self._get_state: Any = None
@@ -112,7 +127,9 @@ class XInputController:
         stamp = self.clock.stamp(timestamp, source_clock_ns=timestamp)
         if result != 0:
             self.disconnect_count += 1
-            raise ControllerDisconnected(f"XInputGetState failed with status {result}")
+            raise ControllerDisconnected(
+                f"XInput slot {self.slot} failed with status {result}"
+            )
         pad = raw.gamepad
         state = XInputState(
             buttons=pad.buttons,
@@ -164,6 +181,46 @@ class XInputController:
         self.close()
 
 
+def connected_xinput_slots() -> tuple[int, ...]:
+    """Return all currently readable XInput slots without retaining devices."""
+    clock = SessionClock()
+    connected: list[int] = []
+    for slot in _XINPUT_SLOTS:
+        controller = XInputController(clock, slot=slot)
+        try:
+            controller.read_state()
+        except ControllerDisconnected:
+            pass
+        else:
+            connected.append(slot)
+        finally:
+            controller.close()
+    return tuple(connected)
+
+
+def resolve_xinput_slot(requested: int | None = None) -> int:
+    """Resolve an explicit slot or require exactly one connected controller."""
+    if requested is not None:
+        _validate_slot(requested)
+    connected = connected_xinput_slots()
+    if requested is not None:
+        if requested in connected:
+            return requested
+        available = ", ".join(str(slot) for slot in connected) or "none"
+        raise ControllerSelectionError(
+            f"XInput slot {requested} is not connected; connected slots: {available}"
+        )
+    if len(connected) == 1:
+        return connected[0]
+    if not connected:
+        raise ControllerSelectionError("no connected XInput controller was found")
+    slots = ", ".join(str(slot) for slot in connected)
+    raise ControllerSelectionError(
+        f"multiple XInput controllers are connected at slots {slots}; "
+        "pass --controller-slot"
+    )
+
+
 class FakeController:
     def __init__(self, states: list[XInputState], clock: SessionClock) -> None:
         self.states, self.clock, self._closed = list(states), clock, False
@@ -190,10 +247,14 @@ class FakeController:
 XInputReader = XInputController
 __all__ = [
     "ControllerDisconnected",
+    "ControllerError",
+    "ControllerSelectionError",
     "FakeController",
     "PhysicalControllerSource",
     "XInputController",
     "XInputReader",
     "XINPUT_GAMEPAD_A",
     "XInputState",
+    "connected_xinput_slots",
+    "resolve_xinput_slot",
 ]
