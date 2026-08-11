@@ -43,4 +43,4 @@ fh4-automation/
 - Only a controller backend may emit virtual-gamepad state; neutral is its fail-safe default.
 - Traffic planning remains separate from low-level vehicle control.
 
-FH4-000 through FH4-200 implement the foundation, telemetry, camera, XInput, synchronization, recording, replay, safety, and dry-run boundaries. Later dataset/model/runtime modules remain intentionally skeletal until their phases begin.
+FH4-000 through FH4-200 implement the foundation, telemetry, camera, XInput, synchronization, recording, replay, safety, and dry-run boundaries. FH4-300 implements strict streaming session validation, conservative lap segmentation, deterministic whole-session splits, model-safe sample contracts, tar shard construction, provenance, and quality reports under `dataset/`. Model/training/runtime modules remain intentionally skeletal until their phases begin.

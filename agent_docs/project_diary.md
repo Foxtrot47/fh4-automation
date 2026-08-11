@@ -14,3 +14,11 @@
 - Camera source timestamps exceed 32 bits. Frame format v2 stores both session and source clocks as uint64 while the reader retains v1 compatibility. Session telemetry uses a distinct integer-nanosecond record variant so values above `2**53` do not pass through float seconds.
 - Camera QPC timestamps, controller/UDP source clocks, FH4 game timestamps, and shared session timestamps are intentionally separate. Cross-stream acceptance alignment must use only `session_ns`; source clocks remain for per-source diagnostics and must not be subtracted across clock domains.
 - The accepted hardware artifact measured 341 frames at 29.9966 source FPS, 1,500 physical XInput samples at 125.083 Hz, and 1,978 exact telemetry packets at 164.970 Hz. Shared-session p95 alignment passed the 33.334 ms gate with no health faults or drops.
+
+## 2026-08-10 — FH4 dataset foundation
+
+- Demonstrations are recorded as approximately 15-minute sessions. Whole sessions are deterministically assigned 80/10/10 to train/validation/test before sample generation; temporal windows are deferred to training to prevent leakage and preserve reusable sequences.
+- Dataset storage uses deterministic uncompressed USTAR shards with at most 1,024 ordered JPEG/JSON pairs. Every dataset manifest binds source session-manifest digests, shard digests, report digests, benchmark/config/profile identity, split IDs, and aligned sample counts.
+- Bounded salvage rejects fatal health, corruption, mixed configuration, missing/out-of-order telemetry, or sessions with more than 1% misaligned frames. Isolated frame alignment failures are filtered and capture drops remain visible warnings rather than silently discarded evidence.
+- Shard telemetry uses an explicit reviewed allowlist. Opaque Horizon/trailing bytes, applied controller bytes, AI-brake fields, and other label-leaking controls are excluded; ego motion, pose, wheel speed, tire slip, suspension, power/thermal, gear, and race state remain available.
+- Candidate lap segmentation requires two observed lap boundaries, tolerates duplicate timestamps and uint32 wrap, discards race/time/lap regressions, and deliberately records collision status as unknown because Data Out cannot prove a clean lap.

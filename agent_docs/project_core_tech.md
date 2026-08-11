@@ -8,7 +8,7 @@
 - DXcam 0.3.0 (DXGI/NumPy) plus NumPy 2.2.6 and Pillow 11.3.0 for the fixed read-only hood-camera recorder; OpenCV is not a capture dependency.
 - UDP receiver and explicit little-endian decoder for the FH4 Horizon Data Out packet.
 - XInput sampling for physical-controller demonstrations.
-- Parquet metadata plus sequential image/video or WebDataset shards for synchronized datasets.
+- Deterministic uncompressed WebDataset-style USTAR shards containing ordered JPEG/JSON pairs, with streaming SHA-256 manifests and session-level splits; temporal windows are deferred to training.
 - A virtual Xbox-controller backend behind an interface; initial implementation remains dry-run until safety gates pass.
 - Pytest for unit/integration tests and recorded packet/session fixtures.
 

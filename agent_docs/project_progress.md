@@ -2,7 +2,7 @@
 
 ## Active plan: FH4 race automation
 
-**Status:** Active — FH4-000, FH4-100, and FH4-200 accepted; FH4-300 next
+**Status:** Active — FH4-000, FH4-100, and FH4-200 accepted; FH4-300 in progress
 **Repository:** `E:/Software/Projects/fh4-automation`
 **Route:** Heavy
 
@@ -63,8 +63,14 @@ Deliver a safe, replayable, data-driven FH4 automation stack that progresses fro
 
 ### FH4-300 — Dataset quality and human baseline
 
+**Status:** In progress — offline tooling complete; human collection and baseline pending.
 **Outcome:** Record 2–4 hours of benchmark driving, including clean laps and recoveries; build session-level train/validation/test splits; generate sequential training shards and baseline lap/intervention metrics.
-**Gate:** No session leakage across splits; all samples carry benchmark/config identity; quality report exposes control distribution, dropped data, alignment, lap coverage, and rejected samples.
+**Fixed decisions:** Record approximately 15-minute sessions. Assign whole sessions to deterministic 80/10/10 train/validation/test splits before sample or shard generation. Produce uncompressed WebDataset-style tar shards containing ordered JPEG/JSON pairs. Use bounded salvage: reject corrupt, mixed-config, disconnected, stale, writer-fault, or overloaded sessions; filter isolated frame-alignment failures, retain explicit camera-drop diagnostics, and reject sessions whose misalignment is no longer isolated. Keep camera source/QPC and FH4 game clocks separate from shared `session_ns`. Defer temporal window construction to training so raw aligned sequences remain reusable.
+**Work packages:** `FH4-310` defines immutable dataset contracts, strict streaming session readers, exact binary/sidecar checks, frame alignment, and acceptance reasons. `FH4-320` adds race/lap segmentation resilient to duplicate timestamps, race resets, and partial laps plus candidate human-baseline metrics. `FH4-330` adds deterministic leakage-safe splits, bounded deterministic tar shards, digests, and dataset manifests. `FH4-340` adds quality reports, offline CLI integration, adversarial tests, live-artifact validation, packaging, and documentation.
+**Software evidence:** FH4-310 through FH4-340 are implemented. Strict streaming validation binds source manifests and exact binary/sidecar telemetry, rejects fatal health/config/schema/continuity faults, reports independent per-stream rates and bounded alignment distributions, and performs 1% bounded frame salvage. Lap candidates exclude partial/reset laps and tolerate duplicates/uint32 wrap without claiming collision-free status. Deterministic whole-session splits, safe tar names, 1,024-sample shard bounds, model-safe ego/slip/pose features, checksummed shards/reports, CLI validation/build, and no-overwrite behavior are covered. Final local evidence: 8 focused and 73 full tests, Ruff, Mypy, lock check, diff check, build, fresh wheel install, and outside-repository imports passed. The accepted FH4-200 artifact validates as 341 aligned frames with 29.9718/125.0834/164.9700 Hz frame/controller/telemetry rates, p95 alignment 0/0 ms, max 16/0 ms, and zero estimated gaps/out-of-order events. A real build produced a 341-sample tar whose SHA-256 matched its manifest and excluded opaque/applied-control fields.
+**Verification caveat:** Independent review found three blockers (insufficient safe telemetry features, missing alignment distributions, and uint32-wrap handling); all were corrected and covered by tests. The required post-fix independent rerun could not execute because both reviewer routes exhausted their Codex usage quota, so the main agent transparently performed the final software/live/wheel checks. This is a remaining verification gap, not evidence of a known production defect.
+**Gate:** No session leakage across splits; every sample carries session/benchmark/config identity; corrupt or incompatible inputs fail closed; frame/controller/telemetry alignment uses integer `session_ns` with a 33.334 ms default bound; reports expose stream rates, controls, health, alignment, accepted/rejected samples, telemetry continuity, and candidate complete-lap coverage. Shard output is deterministic, checksummed, bounded-memory, and refuses to overwrite existing output. Full FH4-300 acceptance still requires the planned 2–4 hours of user demonstrations, held-out split coverage, a human baseline report, and a post-fix independent review when capacity is available.
+**Roles:** The main agent owns scope and status. The built-in `worker` substitutes for unavailable configured `executor_luna`; the built-in `reviewer` substitutes for unavailable configured `tester`. The session-long read-only companion uses built-in `scout` because configured `explorer` is not registered.
 **Dependency:** FH4-200 and user driving sessions.
 
 ### FH4-400 — Solo imitation policy
@@ -131,12 +137,13 @@ Deliver a safe, replayable, data-driven FH4 automation stack that progresses fro
 
 ## Current blockers
 
+- FH4-300 requires 2–4 hours of 15-minute human demonstration sessions and enough sessions for held-out split/baseline coverage; no full demonstration corpus exists yet.
+- Post-fix independent FH4-300 software review is pending because available Codex reviewer routes exhausted their usage quota.
 - Azure `Standard_NC4as_T4_v3` quota approval remains pending; this does not block local dataset work.
-- The repository still has no initial commit, so baseline diff provenance is unavailable and all project files remain untracked.
 - The prevalence of the optional 323-byte packet variant and semantics of the opaque Horizon/trailing bytes remain unknown; those bytes must not become model inputs without separate evidence.
 - RTX 3050 host OS/RAM/network details are not yet recorded; they do not block local dataset work.
 - Virtual-controller driver selection remains deferred until the dry-run runtime is verified.
 
 ## Next action
 
-Begin FH4-300 dataset quality and human-baseline work: define session acceptance/rejection rules, verify race-time and motion-based segmentation, build leakage-safe session-level splits and sequential shards, and produce a quality report before starting the 2–4 hour demonstration collection. Azure quota remains independent of local recording and dataset validation.
+Record one 15-minute benchmark pilot (maximum 27,000 frames/900 seconds), validate it immediately, and inspect its quality/lap report before continuing. If accepted, collect at least eight 15-minute sessions for the two-hour minimum (prefer ten or more for stronger 80/10/10 split granularity), mixing clean laps and deliberate but safe recovery demonstrations. Re-run independent software review when reviewer capacity returns, then build the immutable dataset and human baseline report. Azure quota remains independent of local dataset work.

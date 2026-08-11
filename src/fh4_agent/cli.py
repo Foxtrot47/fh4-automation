@@ -37,6 +37,14 @@ from .contracts import (
     neutral_action,
 )
 from .controls import DryRunControllerBackend
+from .dataset import (
+    MAX_SAMPLES_PER_SHARD,
+    DatasetError,
+    StreamingSessionAdapter,
+    build_dataset,
+    quality_document,
+    write_quality_reports,
+)
 from .input import XInputController
 from .safety import SafetySupervisor
 from .sync import SessionClock
@@ -142,6 +150,27 @@ def _parser() -> argparse.ArgumentParser:
     session_capture.add_argument("--port", type=int, default=5300)
     session_capture.add_argument("--receive-timeout-s", type=float, default=0.25)
     session_capture.add_argument("--output-index", type=int, default=0)
+
+    dataset_validate = commands.add_parser(
+        "dataset-validate", help="strictly validate recording sessions offline"
+    )
+    dataset_validate.add_argument("sessions", nargs="+", type=str)
+    dataset_validate.add_argument("--config", default=DEFAULT_CONFIG)
+    dataset_validate.add_argument(
+        "--report-dir", help="optional directory for quality.json and quality.md"
+    )
+    dataset_build = commands.add_parser(
+        "dataset-build", help="build deterministic offline dataset shards"
+    )
+    dataset_build.add_argument("output", type=str)
+    dataset_build.add_argument("sessions", nargs="+", type=str)
+    dataset_build.add_argument("--config", default=DEFAULT_CONFIG)
+    dataset_build.add_argument(
+        "--max-samples-per-shard",
+        type=int,
+        default=MAX_SAMPLES_PER_SHARD,
+        help="positive shard bound, at most 1024 samples",
+    )
     return parser
 
 
@@ -208,9 +237,7 @@ def _run_session_inspect(path: str, config_path: str, recover_tail: bool) -> int
         recover_session(directory)
     config = load_config(config_path)
     profile = CameraProfile()
-    manifest = validate_manifest(
-        directory / "manifest.json", config.identity, profile
-    )
+    manifest = validate_manifest(directory / "manifest.json", config.identity, profile)
     frames = directory / "frames.fh4jpg"
     frame_count = sum(1 for _ in read_frame_chunks(frames))
     print(
@@ -328,6 +355,41 @@ def _run_session_capture(
     return 0
 
 
+def _run_dataset_validate(
+    sessions: list[str], config_path: str, report_dir: str | None
+) -> int:
+    config = load_config(config_path)
+    qualities = [
+        StreamingSessionAdapter(path, config.identity).validate() for path in sessions
+    ]
+    document = quality_document(qualities)
+    if report_dir is not None:
+        output = Path(report_dir)
+        if output.exists():
+            raise DatasetError(f"quality report output already exists: {output}")
+        output.mkdir(parents=True, exist_ok=False)
+        write_quality_reports(output / "quality.json", output / "quality.md", qualities)
+    print(json.dumps(document, indent=2, sort_keys=True))
+    return 0 if all(quality.accepted for quality in qualities) else 2
+
+
+def _run_dataset_build(
+    output: str,
+    sessions: list[str],
+    config_path: str,
+    max_samples_per_shard: int,
+) -> int:
+    config = load_config(config_path)
+    manifest = build_dataset(
+        output,
+        sessions,
+        config.identity,
+        max_samples_per_shard=max_samples_per_shard,
+    )
+    print(json.dumps(manifest, indent=2, sort_keys=True))
+    return 0
+
+
 def _run_capture_replay(path: str, decode: bool) -> int:
     records = list(replay_capture(path))
     decoded = 0
@@ -422,8 +484,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.receive_timeout_s,
                 args.output_index,
             )
+        if args.command == "dataset-validate":
+            return _run_dataset_validate(args.sessions, args.config, args.report_dir)
+        if args.command == "dataset-build":
+            return _run_dataset_build(
+                args.output,
+                args.sessions,
+                args.config,
+                args.max_samples_per_shard,
+            )
     except (
         ConfigError,
+        DatasetError,
         ActionValidationError,
         TelemetryDecodeError,
         ValueError,
